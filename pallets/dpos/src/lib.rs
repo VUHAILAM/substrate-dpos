@@ -11,11 +11,14 @@ mod tests;
 #[cfg(feature = "runtime-benchmarks")]
 mod benchmarking;
 
+pub mod models;
+
 // https://paritytech.github.io/polkadot-sdk/master/polkadot_sdk_docs/polkadot_sdk/frame_runtime/index.html
 // https://paritytech.github.io/polkadot-sdk/master/polkadot_sdk_docs/guides/your_first_pallet/index.html
 // https://paritytech.github.io/polkadot-sdk/master/frame_support/attr.pallet.html#dev-mode-palletdev_mode
 #[frame_support::pallet(dev_mode)]
 pub mod pallet {
+	use crate::models::*;
 	use frame_support::{
 		pallet_prelude::*,
 		traits::{fungible, FindAuthor},
@@ -52,6 +55,16 @@ pub mod pallet {
 		/// The maximum number of authorities that the pallet can hold.
 		type MaxValidators: Get<u32>;
 
+		/// The maximum number of authorities that the pallet can hold.
+		#[pallet::constant]
+		type MaxCandidates: Get<u32>;
+
+		/// The maximum number of delegators that the candidate can have
+		/// If the number of delegators reaches the maximum, delegator with the lowest amount
+		/// will be replaced by the new delegator if the new delegation is higher
+		#[pallet::constant]
+		type MaxCandidateDelegators: Get<u32>;
+
 		/// Find the author of a block. A fake provide for this type is provided in the runtime. You
 		/// can use a similar mechanism in your tests.
 		type FindAuthor: FindAuthor<Self::AccountId>;
@@ -65,10 +78,11 @@ pub mod pallet {
 	/// https://paritytech.github.io/polkadot-sdk/master/polkadot_sdk_docs/guides/your_first_pallet/index.html#storage
 	/// https://paritytech.github.io/polkadot-sdk/master/frame_support/pallet_macros/attr.storage.html
 	#[pallet::storage]
-	pub type Something<T> = StorageValue<Value = u32>;
+	pub type CandidatePool<T: Config> = CountedStorageMap<_, Twox64Concat, T::AccountId, Candidate<T>, OptionQuery>;
 	#[pallet::storage]
-	pub type SomethingMap<T: Config> = StorageMap<Key = T::AccountId, Value = BlockNumberFor<T>>;
-
+	pub type DelegateCountMap<T: Config> = StorageMap<_, Twox64Concat, T::AccountId, u32, ValueQuery>;
+	#[pallet::storage]
+	pub type DelegationInfos<T: Config> = StorageDoubleMap<_, Twox64Concat, T::AccountId, Twox64Concat, T::AccountId, Delegation<T>, OptionQuery>;
 	/// Pallets use events to inform users when important changes are made.
 	/// https://paritytech.github.io/polkadot-sdk/master/polkadot_sdk_docs/guides/your_first_pallet/index.html#event-and-error
 	#[pallet::event]
@@ -76,6 +90,8 @@ pub mod pallet {
 	pub enum Event<T: Config> {
 		/// We usually use passive tense for events.
 		SomethingStored { something: u32, who: T::AccountId },
+		/// Event emitted when there is a new candidate registered
+		CandidateRegistered { candidate_id: T::AccountId, initial_bond: BalanceOf<T> },
 	}
 
 	/// Errors inform users that something went wrong.
@@ -105,24 +121,26 @@ pub mod pallet {
 			Ok(())
 		}
 
-		/// An example dispatchable that takes a singles value as a parameter, writes the value to
-		/// storage and emits an event. This function must be dispatched by a signed extrinsic.
-		pub fn do_something(origin: OriginFor<T>, something: u32) -> DispatchResult {
-			// Check that the extrinsic was signed and get the signer.
-			// This function will return an error if the extrinsic is not signed.
-			// https://paritytech.github.io/polkadot-sdk/master/polkadot_sdk_docs/reference_docs/frame_origin/index.html
+		pub fn register_as_candidate(
+			origin: OriginFor<T>,
+			initial_bond: BalanceOf<T>,
+		) -> DispatchResult {
 			let who = ensure_signed(origin)?;
+			let candidate = Candidate::new(initial_bond);
+			CandidatePool::<T>::insert(&who, candidate);
+			Self::deposit_event(Event::CandidateRegistered { candidate_id: who, initial_bond });
+			Ok(())
+		}
 
-			// Do some checks.
-			ensure!(something > 42, "ErrorsCanBeStaticStringsToo");
-
-			// Update storage.
-			<Something<T>>::put(something);
-
-			// Emit an event.
-			Self::deposit_event(Event::SomethingStored { something, who });
-
-			// Return a successful `DispatchResult`
+		pub fn delegate(
+			origin: OriginFor<T>,
+			candidate_id: T::AccountId,
+			amount: BalanceOf<T>,
+		) -> DispatchResult {
+			let who = ensure_signed(origin)?;
+			let mut candidate = CandidatePool::<T>::get(&candidate_id).ok_or("Candidate not found")?;
+			let mut delegator = Delegation::new(amount);
+			DelegationInfos::<T>::insert(&candidate_id, &who, delegator);
 			Ok(())
 		}
 	}

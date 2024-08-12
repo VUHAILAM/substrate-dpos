@@ -28,6 +28,11 @@ sp-io = { version = "36.0.0", default-features = false }
 sp-runtime = { version = "37.0.0", default-features = false }
 sp-std = { version = "14.0.0", default-features = false }
 
+frame = { version = "0.3.0", package = "polkadot-sdk-frame", default-features = false, features = [
+	"experimental",
+	"runtime",
+] }
+
 [dev-dependencies]
 pallet-balances = { version = "35.0.0" }
 
