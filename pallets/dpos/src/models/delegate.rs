@@ -1,4 +1,7 @@
 use crate::{BalanceOf, Config};
+
+#[derive(Encode, Decode, RuntimeDebug, TypeInfo, MaxEncodedLen, PartialEq, Eq)]
+#[scale_info(skip_type_params(T))]
 pub struct Delegation<T: Config> {
     pub amount: BalanceOf<T>,
 }

@@ -8,6 +8,8 @@ use sp_runtime::traits::Zero;
 use crate::{BalanceOf, Config};
 use super::DispatchResultWithValue;
 
+#[derive(Encode, Decode, RuntimeDebug, TypeInfo, MaxEncodedLen, PartialEq, Eq)]
+#[scale_info(skip_type_params(T))]
 pub struct Candidate<T: Config> {
     pub bond: BalanceOf<T>,
     pub sum_delegation: BalanceOf<T>,

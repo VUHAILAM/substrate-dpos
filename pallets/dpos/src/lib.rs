@@ -57,6 +57,8 @@ pub mod pallet {
 		/// The maximum number of authorities that the pallet can hold.
 		type MaxValidators: Get<u32>;
 
+		type MinValidators: Get<u32>;
+
 		/// The maximum number of authorities that the pallet can hold.
 		#[pallet::constant]
 		type MaxCandidates: Get<u32>;
@@ -69,6 +71,9 @@ pub mod pallet {
 
 		#[pallet::constant]
 		type MinDelegateAmount: Get<BalanceOf<Self>>;
+
+		#[pallet::constant]
+		type EpochDuration: Get<BlockNumberFor<Self>>;
 
 		/// Find the author of a block. A fake provide for this type is provided in the runtime. You
 		/// can use a similar mechanism in your tests.
@@ -90,6 +95,48 @@ pub mod pallet {
 	pub type DelegationInfos<T: Config> = StorageDoubleMap<_, Twox64Concat, T::AccountId, Twox64Concat, T::AccountId, Delegation<T>, OptionQuery>;
 	#[pallet::storage]
 	pub type CandidateDelegators<T: Config> = StorageMap<_, Twox64Concat, T::AccountId, BoundedVec<T::AccountId, <T as Config>::MaxCandidateDelegators>, ValueQuery>;
+	#[pallet::storage]
+	pub type EpochIndex<T: Config> = StorageValue<_, u32, ValueQuery>;
+	#[allow(type_alias_bounds)]
+	pub type TopCandidateVec<T: Config> = sp_std::vec::Vec<(T::AccountId, BalanceOf<T>, BalanceOf<T>)>;
+	#[pallet::storage]
+	#[pallet::getter(fn current_validators)]
+	pub type CurrentValidators<T: Config> = StorageValue<_, BoundedVec<(T::AccountId, BalanceOf<T>, BalanceOf<T>), <T as Config>::MaxValidators>, ValueQuery>;
+	#[pallet::storage]
+	#[pallet::unbounded]
+	#[pallet::getter(fn last_epoch_snapshot)]
+	pub type LastEpochSnapshot<T: Config> = StorageValue<_, EpochSnapshot<T>, OptionQuery>;
+
+	
+	#[pallet::hooks]
+	impl<T: Config> Hooks<BlockNumberFor<T>> for Pallet<T> {
+		fn on_initialize(n: BlockNumberFor<T>) -> Weight {
+			let epoch_indx = n % T::EpochDuration::get();
+			if epoch_indx == BlockNumberFor::<T>::zero() {
+				let validator_set = Self::select_validator_set();
+
+				CurrentValidators::<T>::put(
+					BoundedVec::try_from(validator_set.to_vec())
+						.expect("Exceed limit number of the validators in the active set"),
+				);
+				// In new epoch, we want to set the CurrentEpochSnapshot to the current dataset
+				LastEpochSnapshot::<T>::set(Some(Pallet::<T>::capture_epoch_snapshot(
+					&validator_set,
+				)));
+
+				let new_set = CurrentValidators::<T>::get()
+					.iter()
+					.map(|(active_validator, _, _)| active_validator.clone())
+					.collect::<Vec<T::AccountId>>();
+
+				Pallet::<T>::report_new_validators(new_set);
+				Self::move_to_next_epoch(validator_set);
+			}
+			// We return a default weight because we do not expect you to do weights for your
+			// project... Except for extra credit...
+			return Weight::default();
+		}
+	}
 	/// Pallets use events to inform users when important changes are made.
 	/// https://paritytech.github.io/polkadot-sdk/master/polkadot_sdk_docs/guides/your_first_pallet/index.html#event-and-error
 	#[pallet::event]
@@ -111,6 +158,13 @@ pub mod pallet {
 			delegator: T::AccountId,
 			amount: BalanceOf<T>,
 			left_delegated_amount: BalanceOf<T>,
+		},
+		NextEpochMoved {
+			last_epoch: u32,
+			next_epoch: u32,
+			at_block: BlockNumberFor<T>,
+			total_candidates: u64,
+			total_validators: u64,
 		},
 	}
 
@@ -155,7 +209,7 @@ pub mod pallet {
 				(new_set.len() as u32) < T::MaxValidators::get(),
 				Error::<T>::TooManyValidators
 			);
-			T::ReportNewValidatorSet::report_new_validator_set(new_set);
+			Self::report_new_validators(new_set);
 			Ok(())
 		}
 
@@ -415,6 +469,69 @@ pub mod pallet {
 			CandidateDelegators::<T>::set(&candidate, candidate_delegators);
 
 			Ok(())
+		}
+
+		pub(crate) fn select_validator_set() -> TopCandidateVec<T> {
+			// If the number of candidates is below the threshold for active set, network won't
+			// function
+			if CandidatePool::<T>::count() < T::MinValidators::get() {
+				return vec![];
+			}
+			let validator_len = T::MaxValidators::get();
+			
+			// Collect candidates with their total stake (bond + total delegations)
+			let mut top_candidates: TopCandidateVec<T> = CandidatePool::<T>::iter()
+				.map(|(candidate_id, candidate)| {
+					let total_stake = candidate.total();
+					(candidate_id, candidate.bond, total_stake)
+				})
+				.collect();
+
+			// Sort candidates by their total stake in descending order
+			top_candidates.sort_by_key(|&(_, _, total_stake)| Reverse(total_stake));
+
+			// Select the top candidates based on the maximum active validators allowed
+			let usize_validator_len = validator_len as usize;
+			sorted_candidates.into_iter().take(validator_len).collect()
+		}
+
+		pub(crate) fn move_to_next_epoch(valivdator_set: TopCandidateVec<T>) {
+			let epoch_index = EpochIndex::<T>::get();
+			let next_epoch_index = epoch_index.saturating_add(1);
+			EpochIndex::<T>::set(next_epoch_index);
+
+			Self::deposit_event(Event::NextEpochMoved {
+				last_epoch: epoch_index,
+				next_epoch: next_epoch_index,
+				at_block: frame::deps::frame_system::Pallet::<T>::block_number(),
+				total_candidates: CandidatePool::<T>::count() as u64,
+				total_validators: valivdator_set.len() as u64,
+			});
+		}
+
+		pub fn report_new_validators(new_set: Vec<T::AccountId>) {
+			T::ReportNewValidatorSet::report_new_validator_set(new_set);
+		}
+
+		pub fn capture_epoch_snapshot(
+			validator_set: &CandidateDelegationSet<T>,
+		) -> Epoch<T> {
+			let mut epoch_snapshot = Epoch::<T>::default();
+			for (validator_id, bond, _) in validator_set.to_vec().iter() {
+				epoch_snapshot.add_validator(validator_id.clone(), bond.clone());
+				for delegator in CandidateDelegators::<T>::get(validator_id) {
+					if let Some(delegation_info) =
+						DelegationInfos::<T>::get(&delegator, &validator_id)
+					{
+						epoch_snapshot.add_delegator(
+							delegator,
+							active_validator_id.clone(),
+							delegation_info.amount,
+						);
+					}
+				}
+			}
+			epoch_snapshot
 		}
 	}
 }
