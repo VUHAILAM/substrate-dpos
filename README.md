@@ -68,3 +68,15 @@ A FRAME pallet is comprised of a number of blockchain primitives, including:
 Each pallet has its own `Config` trait which serves as a configuration interface
 to generically define the types and parameters it depends on.
 
+## Candidate and Delegator
+In this course, I will introduce the simple dpos. The candidates can register to be validator, and delegator can stake some bond to candidate.
+We have some event:
+- `CandidateRegistered`: Event emitted when there is a new candidate registered
+- `CandidateRegistrationRemoved`: Event emitted when candidate is removed from the candidate pool
+- `CandidateDelegated`: Event emitted when candidate is delegated
+- `CandidateUndelegated`: Event emitted when candidate is delegated
+And some functions:
+- `register_as_candidate`: Allows a node to register itself as a candidate in the DPOS network.
+- `delegate`: Allows a delegator to delegate tokens to a candidate.
+- `unregister_as_candidate`: unregisters a candidate from the DPoS (Delegated Proof of Stake) network.
+- `undelegate`: undelegates a specified amount of funds from a candidate in the DPoS (Delegated Proof of Stake) network.
