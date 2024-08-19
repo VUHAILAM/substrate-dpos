@@ -67,4 +67,24 @@ A FRAME pallet is comprised of a number of blockchain primitives, including:
 
 Each pallet has its own `Config` trait which serves as a configuration interface
 to generically define the types and parameters it depends on.
+## Candidate and Delegator
+In this course, I will introduce the simple dpos. The candidates can register to be validator, and delegator can stake some bond to candidate.
+We have some event:
+- `CandidateRegistered`: Event emitted when there is a new candidate registered
+- `CandidateRegistrationRemoved`: Event emitted when candidate is removed from the candidate pool
+- `CandidateDelegated`: Event emitted when candidate is delegated
+- `CandidateUndelegated`: Event emitted when candidate is delegated
+And some functions:
+- `register_as_candidate`: Allows a node to register itself as a candidate in the DPOS network.
+- `delegate`: Allows a delegator to delegate tokens to a candidate.
+- `unregister_as_candidate`: unregisters a candidate from the DPoS (Delegated Proof of Stake) network.
+- `undelegate`: undelegates a specified amount of funds from a candidate in the DPoS (Delegated Proof of Stake) network.
+## Select candidates to validators in each block epoch
+- When new block produces, we will snapshot and choose the top candidates to be validators. We use [hooks](https://paritytech.github.io/polkadot-sdk/master/frame_support/pallet_macros/attr.hooks.html) to handle the snapshot event.
+- event:
+  `NextEpochMoved`
+  #### Validator Election
 
+- Top validators under `MaxValidators` and above `MinValidators` are selected based on the total amount of delegated amount and the total amount they bonded.
+- If there is not enough validators (under the configured `MinValidators`), the active validator set is empty. By this way, there is no block produced and no reward distributed.
+- In this pallet, the top validators will be sorted out and selected at the beginning of the new epoch.
