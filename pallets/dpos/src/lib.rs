@@ -105,8 +105,9 @@ pub mod pallet {
 	#[pallet::storage]
 	#[pallet::unbounded]
 	#[pallet::getter(fn last_epoch_snapshot)]
-	pub type LastEpochSnapshot<T: Config> = StorageValue<_, EpochSnapshot<T>, OptionQuery>;
-
+	pub type LastEpochSnapshot<T: Config> = StorageValue<_, Epoch<T>, OptionQuery>;
+	#[pallet::storage]
+	pub type Rewards<T: Config> = StorageMap<_, Twox64Concat, T::AccountId, BalanceOf<T>, ValueQuery>;
 	
 	#[pallet::hooks]
 	impl<T: Config> Hooks<BlockNumberFor<T>> for Pallet<T> {
@@ -136,6 +137,7 @@ pub mod pallet {
 			// project... Except for extra credit...
 			return Weight::default();
 		}
+
 	}
 	/// Pallets use events to inform users when important changes are made.
 	/// https://paritytech.github.io/polkadot-sdk/master/polkadot_sdk_docs/guides/your_first_pallet/index.html#event-and-error
@@ -166,6 +168,7 @@ pub mod pallet {
 			total_candidates: u64,
 			total_validators: u64,
 		},
+		RewardClaimed { claimer: T::AccountId, total_reward: BalanceOf<T> },
 	}
 
 	/// Errors inform users that something went wrong.
@@ -180,6 +183,7 @@ pub mod pallet {
 		CandidateDoesNotExist,
 		DelegationDoesNotExist,
 		BelowMinimumDelegateAmount,
+		NoClaimableRewardFound,
 	}
 
 	/// A reason for the pallet dpos placing a hold on funds.
@@ -299,7 +303,12 @@ pub mod pallet {
 			// Releasing the hold bonds of the candidate
 			let candidate_detail = Self::get_candidate(&candidate)?;
 			Self::release_candidate_bonds(&candidate, candidate_detail.bond)?;
-
+			let rewards = Rewards::<T>::get(&candidate);
+			if rewards > Zero::zero() {
+				let _ = T::NativeBalance::mint_into(&candidate, rewards);
+				Rewards::<T>::remove(&candidate);
+				Self::deposit_event(Event::RewardClaimed { claimer: candidate, total_reward: rewards });
+			}
 			// Removing any information related the registration of the candidate in the pool
 			CandidatePool::<T>::remove(&candidate);
 
@@ -352,6 +361,19 @@ pub mod pallet {
 				amount,
 				left_delegated_amount: new_delegated_amount,
 			});
+			Ok(())
+		}
+
+		pub fn claim_reward(origin: OriginFor<T>) -> DispatchResult {
+			let claimer = ensure_signed(origin)?;
+
+			let rewards = Rewards::<T>::try_get(&claimer)
+				.map_err(|_| Error::<T>::NoClaimableRewardFound)?;
+			ensure!(rewards > Zero::zero(), Error::<T>::NoClaimableRewardFound);
+			let _ = T::NativeBalance::mint_into(&claimer, rewards);
+			Rewards::<T>::remove(&claimer);
+
+			Self::deposit_event(Event::RewardClaimed { claimer, total_reward: rewards });
 			Ok(())
 		}
 	}
@@ -532,6 +554,29 @@ pub mod pallet {
 				}
 			}
 			epoch_snapshot
+		}
+
+		fn execute_rewards() {
+			if let Some(current_block_author) = Self::find_author() {
+				if let Some(Epoch { validators, delegations }) = LastEpochSnapshot::<T>::get() {
+					if let Some(total_bond) = validators.get(&current_block_author) {
+						let bond = Percent::from_rational(5, 1000) * total;
+						let mut rewards = Rewards::<T>::get(&validator);
+						rewards = rewards.saturating_add(bond);
+						Rewards::<T>::set(validator.clone(), rewards);
+			
+						for ((delegator, candidate), amount) in delegations.iter() {
+							if candidate != validator {
+								continue;
+							}
+							// Calculating the new reward of the block author
+							let mut rewards = Rewards::<T>::get(&delegator);
+							rewards = rewards.saturating_add(bond);
+							Rewards::<T>::set(delegator, rewards);
+						}						
+					}
+				}
+			}
 		}
 	}
 }

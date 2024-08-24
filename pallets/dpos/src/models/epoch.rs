@@ -1,4 +1,6 @@
 
+use sp_std::collections::btree_map::BTreeMap;
+
 #[derive(Encode, Decode, RuntimeDebug, TypeInfo, MaxEncodedLen, PartialEq, Eq)]
 #[scale_info(skip_type_params(T))]
 pub struct Epoch<T: Config> {
