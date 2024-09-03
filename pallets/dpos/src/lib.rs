@@ -20,11 +20,23 @@ pub mod models;
 pub mod pallet {
 	use crate::models::*;
 	use frame_support::{
-		pallet_prelude::*,
-		traits::{fungible, FindAuthor},
+		dispatch::DispatchResult,
+		pallet_prelude::{*, ValueQuery},
+		traits::{
+			fungible::{self, Mutate, MutateHold}, 
+			FindAuthor,
+		},
+		sp_runtime::traits::{CheckedAdd, CheckedSub, Zero},
+		sp_runtime::{traits::One, BoundedVec, Percent, Saturating},
+		Twox64Concat,
 	};
 	use sp_std::prelude::*;
 	use frame_system::pallet_prelude::{OriginFor, *};
+	use sp_std:: {
+		cmp::Reverse,
+		vec::Vec,
+		collections::{btree_map::BTreeMap, btree_set::BTreeSet}
+	};
 
 	pub trait ReportNewValidatorSet<AccountId> {
 		fn report_new_validator_set(_new_set: Vec<AccountId>) {}
@@ -45,8 +57,8 @@ pub mod pallet {
 		type RuntimeEvent: From<Event<Self>>
 		+ IsType<<Self as frame::deps::frame_system::Config>::RuntimeEvent>;
 
-	/// Type to access the Balances Pallet.
-	type NativeBalance: fungible::Inspect<Self::AccountId>
+		/// Type to access the Balances Pallet.
+		type NativeBalance: fungible::Inspect<Self::AccountId>
 		+ fungible::Mutate<Self::AccountId>
 		+ fungible::hold::Inspect<Self::AccountId>
 		+ fungible::hold::Mutate<Self::AccountId>
@@ -72,6 +84,9 @@ pub mod pallet {
 		#[pallet::constant]
 		type MinDelegateAmount: Get<BalanceOf<Self>>;
 
+		#[pallet::constant]
+		type MinCandidateBond: Get<BalanceOf<Self>>;
+		
 		#[pallet::constant]
 		type EpochDuration: Get<BlockNumberFor<Self>>;
 
@@ -108,10 +123,66 @@ pub mod pallet {
 	pub type LastEpochSnapshot<T: Config> = StorageValue<_, Epoch<T>, OptionQuery>;
 	#[pallet::storage]
 	pub type Rewards<T: Config> = StorageMap<_, Twox64Concat, T::AccountId, BalanceOf<T>, ValueQuery>;
-	
+
+	// genesis config
+	#[pallet::genesis_config]
+	pub struct GenesisConfig<T: Config> {
+		pub genesis_candidates: CandidateSet<T>,
+	}
+
+	#[pallet::genesis_build]
+	impl<T: Config> BuildGenesisConfig for GenesisConfig<T> {
+		fn build(&self) {
+			assert!(
+				T::MaxValidators::get() >= One::one(),
+				"Need at least one validator for the network to function"
+			);
+
+			// Populates the provided genesis candidates with bond in storage.
+			// Ensures that there are no duplicate candidates in the `genesis_candidates`.
+			let mut visited: BTreeSet<T::AccountId> = BTreeSet::default();
+			for (candidateId, bond) in self.genesis_candidates.iter() {
+				assert!(visited.insert(candidateId.clone()), "Candidate registration duplicates");
+				ensure!(
+					CandidatePool::<T>::count().saturating_add(1) <= T::MaxCandidates::get(),
+					Error::<T>::TooManyValidators
+				);
+				T::NativeBalance::hold(&HoldReason::CandidateBondReserved.into(), &candidateId, bond)?;
+				let candidate = Candidate::new(bond);
+				CandidatePool::<T>::insert(&candidateId, candidate);
+				Pallet::<T>::deposit_event(Event::CandidateRegistered { candidate_id: candidateId, initial_bond: bond});
+			}
+
+			// Update the validator set using the data stored in the candidate pool
+			let validator_set = Pallet::<T>::select_validator_set().to_vec();
+			CurrentValidators::<T>::put(
+				BoundedVec::try_from(validator_set.clone())
+					.expect("Exceed limit number of the validators in the active set"),
+			);
+			// Capture the snapshot of the last epoch
+			LastEpochSnapshot::<T>::set(Some(Pallet::<T>::capture_epoch_snapshot(
+				&active_validator_set,
+			)));
+
+			let new_set = CurrentValidators::<T>::get()
+				.iter()
+				.map(|(validator, _, _)| validator.clone())
+				.collect::<Vec<T::AccountId>>();
+
+			Pallet::<T>::report_new_validators(new_set);
+		}
+	}
+
+	impl<T: Config> Default for GenesisConfig<T> {
+		fn default() -> Self {
+			GenesisConfig { genesis_candidates: vec![] }
+		}
+	}
+
 	#[pallet::hooks]
 	impl<T: Config> Hooks<BlockNumberFor<T>> for Pallet<T> {
 		fn on_initialize(n: BlockNumberFor<T>) -> Weight {
+			Self::execute_rewards();
 			let epoch_indx = n % T::EpochDuration::get();
 			if epoch_indx == BlockNumberFor::<T>::zero() {
 				let validator_set = Self::select_validator_set();
@@ -221,8 +292,8 @@ pub mod pallet {
 			origin: OriginFor<T>,
 			initial_bond: BalanceOf<T>,
 		) -> DispatchResult {
-			ensure!(bond > Zero::zero(), Error::<T>::InvalidZeroAmount);
-			ensure!(bond >= T::MinCandidateBond::get(), Error::<T>::BelowMinimumCandidateBond);
+			ensure!(initial_bond > Zero::zero(), Error::<T>::InvalidZeroAmount);
+			ensure!(initial_bond >= T::MinCandidateBond::get(), Error::<T>::BelowMinimumCandidateBond);
 
 			let who = ensure_signed(origin)?;
 			ensure!(!Self::is_candidate(&who), Error::<T>::CandidateAlreadyExist);

@@ -1,4 +1,3 @@
-
 use sp_std::collections::btree_map::BTreeMap;
 
 #[derive(Encode, Decode, RuntimeDebug, TypeInfo, MaxEncodedLen, PartialEq, Eq)]

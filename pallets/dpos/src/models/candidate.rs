@@ -39,3 +39,6 @@ impl<T: Config> Candidate<T> {
 		self.sum_delegation.defensive_saturating_add(self.bond)
 	}
 }
+
+#[allow(type_alias_bounds)]
+pub type CandidateSet<T: Config> = sp_std::vec::Vec<(T::AccountId, BalanceOf<T>)>;
